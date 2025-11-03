@@ -153,7 +153,7 @@ class SHAC:
         self.episode_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
         self.episode_discounted_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
         self.episode_gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype = int)
+        self.episode_length = torch.zeros(self.num_envs, dtype = torch.int32, device = self.device)
         self.best_policy_loss = np.inf
         self.actor_loss = np.inf
         self.value_loss = np.inf
@@ -395,7 +395,7 @@ class SHAC:
         self.initialize_env()
         self.episode_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
         self.episode_discounted_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype = int)
+        self.episode_length = torch.zeros(self.num_envs, dtype = torch.int32, device = self.device)
         self.episode_gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
         
         def actor_closure():

@@ -1854,11 +1854,13 @@ def compile():
 #        cpp_flags = ["/Zi", "/Od", "/DEBUG"]
 #        ld_flags = ["/DEBUG"]
     else:
-        cpp_flags = ["-Z", "-O2", "-DNDEBUG"]
+        cpp_flags = ["-O2", "-DNDEBUG", "-std=c++14"]
         ld_flags = ["-DNDEBUG"]
 
-    # just use minimum to ensure compatability
-    cuda_flags = ['-gencode=arch=compute_35,code=compute_35']
+    # use appropriate CUDA architecture
+    # compute_86 for Ampere and newer (RTX 30/40 series)
+    # Add --allow-unsupported-compiler for newer g++ versions
+    cuda_flags = ['-gencode=arch=compute_86,code=sm_86', '-std=c++14', '--allow-unsupported-compiler', '--expt-extended-lambda']
 
     # release config
     if use_cuda:

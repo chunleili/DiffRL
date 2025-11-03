@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.o
+*.so
+dflex/dflex.egg-info/
+dflex/dflex/kernels
+examples/logs/*
+examples/outputs/*
+dflex/dflex.egg-info/
