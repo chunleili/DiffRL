@@ -6,7 +6,10 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import os
+import sys
 import argparse
+import runpy
+import shlex
 
 configs = {'Ant': 'ant.yaml', 'CartPole': 'cartpole_swing_up.yaml', 'Hopper': 'hopper.yaml', 'Cheetah': 'cheetah.yaml', 'Humanoid': 'humanoid.yaml', 'SNUHumanoid': 'snu_humanoid.yaml'}
 
@@ -50,4 +53,35 @@ for i in range(len(seeds)):
     commands.append(cmd)
 
 for command in commands:
-    os.system(command)
+    # 允许在同一 Python 进程内执行子脚本, 便于调试器(step into)
+    # 示例 command: "python train_shac.py --cfg ... --seed ... --logdir ... --no-time-stamp"
+    args_list = shlex.split(command)
+
+    # 提取脚本路径与参数(跳过前缀的 "python")
+    if len(args_list) < 2:
+        print(f"Skip invalid command: {command}")
+        continue
+
+    script_name = args_list[1]
+    script_path = script_name
+    if not os.path.isabs(script_name):
+        # 与本文件同目录下的训练脚本
+        script_path = os.path.join(os.path.dirname(__file__), script_name)
+
+    # 设置 sys.argv 以模拟命令行参数
+    argv_backup = sys.argv[:]
+    sys.argv = [script_name] + args_list[2:]
+
+    print(f"\n=== Running in-process: {script_name} {' '.join(sys.argv[1:])} ===")
+    try:
+        # 在当前进程中执行, debug 时可进入子脚本
+        runpy.run_path(script_path, run_name="__main__")
+    except SystemExit as e:
+        # 捕获 argparse 或脚本内显式退出, 不中断后续任务
+        code = e.code if isinstance(e.code, int) else 0
+        print(f"{script_name} exited with code {code}")
+    finally:
+        # 恢复调用方 argv
+        sys.argv = argv_backup
+
+print("\nAll runs finished.")
