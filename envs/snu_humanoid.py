@@ -74,8 +74,15 @@ class SNUHumanoidEnv(DFlexEnv):
 
         #-----------------------
         # set up Usd renderer
+        # ensure we have a name for file prefix
+        self.name = getattr(self, 'name', 'SNU')
         if (self.visualize):
-            self.stage = Usd.Stage.CreateNew("outputs/" + self.name + "HumanoidSNU_Low_" + str(self.num_envs) + ".usd")
+            import datetime
+            # ensure output directory exists
+            os.makedirs("outputs", exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+            usd_path = os.path.join("outputs", f"{self.name}HumanoidSNU_Low_{self.seed}_{self.num_envs}_{timestamp}.usd")
+            self.stage = Usd.Stage.CreateNew(usd_path)
 
             self.renderer = df.render.UsdRenderer(self.model, self.stage)
             self.renderer.draw_points = True

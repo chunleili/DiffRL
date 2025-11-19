@@ -49,7 +49,9 @@ class AntEnv(DFlexEnv):
         #-----------------------
         # set up Usd renderer
         if (self.visualize):
-            self.stage = Usd.Stage.CreateNew("outputs/" + "Ant_" + str(self.num_envs) + ".usd")
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+            self.stage = Usd.Stage.CreateNew("outputs/" + "Ant_" + str(self.num_envs) + "_" + str(timestamp) + ".usd")
 
             self.renderer = df.render.UsdRenderer(self.model, self.stage)
             self.renderer.draw_points = True
