@@ -3001,3 +3001,604 @@ class XPBDIntegrator:
 
 
             return state_out
+
+
+
+
+
+
+# ---------------------------------------------------------------------------- #
+#                        XPBDVolumetricMuscleIntegrator                        #
+# ---------------------------------------------------------------------------- #
+
+class XPBDVolumetricMuscleIntegrator:
+    """A XPBD-based volumetric muscle integrator. This class is mimicing the SemiImplicitIntegrator but with volumetric muscle dynamics.
+
+    After constructing `Model` and `State` objects this time-integrator
+    may be used to advance the simulation state forward in time.
+
+    Example:
+
+        >>> integrator = df.SemiImplicitIntegrator()
+        >>>
+        >>> # simulation loop
+        >>> for i in range(100):
+        >>>     state = integrator.forward(model, state, dt)
+
+    """
+
+    def __init__(self):
+        pass
+
+    def forward(self, model: Model, state_in: State, dt: float, substeps: int, mass_matrix_freq: int) -> State:
+        """Performs a single integration step forward in time
+        
+        This method inserts a node into the PyTorch computational graph with
+        references to all model and state tensors such that gradients
+        can be propagrated back through the simulation step.
+
+        Args:
+
+            model: Simulation model
+            state: Simulation state at the start the time-step
+            dt: The simulation time-step (usually in seconds)
+
+        Returns:
+
+            The state of the system at the end of the time-step
+
+        """
+
+        if dflex.config.no_grad:
+
+            # if no gradient required then do inplace update
+            for i in range(substeps):
+                self._simulate(df.Tape(), model, state_in, state_in, dt/float(substeps), update_mass_matrix=(i%mass_matrix_freq)==0)
+            
+            return state_in
+
+        else:
+
+            # get list of inputs and outputs for PyTorch tensor tracking            
+            inputs = [*state_in.flatten(), *model.flatten()]
+
+            # run sim as a PyTorch op
+            tensors = SimulateFunc.apply(self, model, state_in, dt, substeps, mass_matrix_freq, *inputs)
+
+            global g_state_out
+            state_out = g_state_out
+            g_state_out = None # null reference
+
+            return state_out
+            
+
+
+    def _simulate(self, tape, model, state_in, state_out, dt, update_mass_matrix=True):
+
+        with dflex.util.ScopedTimer("simulate", False):     
+            # alloc particle force buffer
+            if (model.particle_count):
+                state_out.particle_f.zero_()
+
+            if (model.link_count):
+                state_out.body_ft_s = torch.zeros((model.link_count, 6), dtype=torch.float32, device=model.adapter, requires_grad=True)
+                state_out.body_f_ext_s = torch.zeros((model.link_count, 6), dtype=torch.float32, device=model.adapter, requires_grad=True)
+
+            # damped springs
+            if (model.spring_count):
+
+                tape.launch(func=eval_springs,
+                            dim=model.spring_count,
+                            inputs=[state_in.particle_q, state_in.particle_qd, model.spring_indices, model.spring_rest_length, model.spring_stiffness, model.spring_damping],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+            # triangle elastic and lift/drag forces
+            if (model.tri_count and model.tri_ke > 0.0):
+
+                tape.launch(func=eval_triangles,
+                            dim=model.tri_count,
+                            inputs=[
+                                state_in.particle_q,
+                                state_in.particle_qd,
+                                model.tri_indices,
+                                model.tri_poses,
+                                model.tri_activations,
+                                model.tri_ke,
+                                model.tri_ka,
+                                model.tri_kd,
+                                model.tri_drag,
+                                model.tri_lift
+                            ],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+            # triangle/triangle contacts
+            if (model.enable_tri_collisions and model.tri_count and model.tri_ke > 0.0):
+                tape.launch(func=eval_triangles_contact,
+                            dim=model.tri_count * model.particle_count,
+                            inputs=[
+                                model.particle_count,
+                                state_in.particle_q,
+                                state_in.particle_qd,
+                                model.tri_indices,
+                                model.tri_poses,
+                                model.tri_activations,
+                                model.tri_ke,
+                                model.tri_ka,
+                                model.tri_kd,
+                                model.tri_drag,
+                                model.tri_lift
+                            ],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+            # triangle bending
+            if (model.edge_count):
+
+                tape.launch(func=eval_bending,
+                            dim=model.edge_count,
+                            inputs=[state_in.particle_q, state_in.particle_qd, model.edge_indices, model.edge_rest_angle, model.edge_ke, model.edge_kd],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+            # particle ground contact
+            if (model.ground and model.particle_count):
+
+                tape.launch(func=eval_contacts,
+                            dim=model.particle_count,
+                            inputs=[state_in.particle_q, state_in.particle_qd, model.contact_ke, model.contact_kd, model.contact_kf, model.contact_mu],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+            # tetrahedral FEM
+            if (model.tet_count):
+
+                tape.launch(func=eval_tetrahedra,
+                            dim=model.tet_count,
+                            inputs=[state_in.particle_q, state_in.particle_qd, model.tet_indices, model.tet_poses, model.tet_activations, model.tet_materials],
+                            outputs=[state_out.particle_f],
+                            adapter=model.adapter)
+
+
+            #----------------------------
+            # articulations
+
+            if (model.link_count):
+
+                # evaluate body transforms
+                tape.launch(
+                    func=eval_rigid_fk,
+                    dim=model.articulation_count,
+                    inputs=[
+                        model.articulation_joint_start,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        state_in.joint_q,
+                        model.joint_X_pj,
+                        model.joint_X_cm,
+                        model.joint_axis
+                    ], 
+                    outputs=[
+                        state_out.body_X_sc,
+                        state_out.body_X_sm
+                    ],
+                    adapter=model.adapter,
+                    preserve_output=True)
+
+                # evaluate joint inertias, motion vectors, and forces
+                tape.launch(
+                    func=eval_rigid_id,
+                    dim=model.articulation_count,                       
+                    inputs=[
+                        model.articulation_joint_start,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        state_in.joint_q,
+                        state_in.joint_qd,
+                        model.joint_axis,
+                        model.joint_target_ke,
+                        model.joint_target_kd,
+                        model.body_I_m,
+                        state_out.body_X_sc,
+                        state_out.body_X_sm,
+                        model.joint_X_pj,
+                        model.gravity
+                    ],
+                    outputs=[
+                        state_out.joint_S_s,
+                        state_out.body_I_s,
+                        state_out.body_v_s,
+                        state_out.body_f_s,
+                        state_out.body_a_s,
+                    ],
+                    adapter=model.adapter,
+                    preserve_output=True)
+
+                if (model.ground and model.contact_count > 0):
+                    # evaluate contact forces
+                    tape.launch(
+                        func=eval_rigid_contacts_art,
+                        dim=model.contact_count,
+                        inputs=[
+                            state_out.body_X_sc,
+                            state_out.body_v_s,
+                            model.contact_body0,
+                            model.contact_point0,
+                            model.contact_dist,
+                            model.contact_material,
+                            model.shape_materials
+                        ],
+                        outputs=[
+                            state_out.body_f_s
+                        ],
+                        adapter=model.adapter,
+                        preserve_output=True)
+
+                # particle shape contact
+                if (model.particle_count):
+                    
+                    # tape.launch(func=eval_soft_contacts,
+                    #             dim=model.particle_count*model.shape_count,
+                    #             inputs=[state_in.particle_q, state_in.particle_qd, model.contact_ke, model.contact_kd, model.contact_kf, model.contact_mu],
+                    #             outputs=[state_out.particle_f],
+                    #             adapter=model.adapter)
+
+                    tape.launch(func=eval_soft_contacts,
+                                dim=model.particle_count*model.shape_count,
+                                inputs=[
+                                    model.particle_count,
+                                    state_in.particle_q, 
+                                    state_in.particle_qd,
+                                    state_in.body_X_sc,
+                                    state_in.body_v_s,
+                                    model.shape_transform,
+                                    model.shape_body,
+                                    model.shape_geo_type, 
+                                    torch.Tensor(),
+                                    model.shape_geo_scale,
+                                    model.shape_materials,
+                                    model.contact_ke,
+                                    model.contact_kd, 
+                                    model.contact_kf, 
+                                    model.contact_mu],
+                                    # outputs
+                                outputs=[
+                                    state_out.particle_f,
+                                    state_out.body_f_s],
+                                adapter=model.adapter)
+
+                # evaluate muscle actuation
+                tape.launch(
+                    func=eval_muscles,
+                    dim=model.muscle_count,
+                    inputs=[
+                        state_out.body_X_sc,
+                        state_out.body_v_s,
+                        model.muscle_start,
+                        model.muscle_params,
+                        model.muscle_links,
+                        model.muscle_points,
+                        model.muscle_activation
+                    ],
+                    outputs=[
+                        state_out.body_f_s
+                    ],
+                    adapter=model.adapter,
+                    preserve_output=True)
+
+                # evaluate joint torques
+                tape.launch(
+                    func=eval_rigid_tau,
+                    dim=model.articulation_count,
+                    inputs=[
+                        model.articulation_joint_start,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        state_in.joint_q,
+                        state_in.joint_qd,
+                        state_in.joint_act,
+                        model.joint_target,
+                        model.joint_target_ke,
+                        model.joint_target_kd,
+                        model.joint_limit_lower,
+                        model.joint_limit_upper,
+                        model.joint_limit_ke,
+                        model.joint_limit_kd,
+                        model.joint_axis,
+                        state_out.joint_S_s,
+                        state_out.body_f_s
+                    ],
+                    outputs=[
+                        state_out.body_ft_s,
+                        state_out.joint_tau
+                    ],
+                    adapter=model.adapter,
+                    preserve_output=True)
+
+                
+                if (update_mass_matrix):
+
+                    model.alloc_mass_matrix()
+
+                    # build J
+                    tape.launch(
+                        func=eval_rigid_jacobian,
+                        dim=model.articulation_count,
+                        inputs=[
+                            # inputs
+                            model.articulation_joint_start,
+                            model.articulation_J_start,
+                            model.joint_parent,
+                            model.joint_qd_start,
+                            state_out.joint_S_s
+                        ],
+                        outputs=[
+                            model.J
+                        ],
+                        adapter=model.adapter,
+                        preserve_output=True)
+
+                    # build M
+                    tape.launch(
+                        func=eval_rigid_mass,
+                        dim=model.articulation_count,                       
+                        inputs=[
+                            # inputs
+                            model.articulation_joint_start,
+                            model.articulation_M_start,
+                            state_out.body_I_s
+                        ],
+                        outputs=[
+                            model.M
+                        ],
+                        adapter=model.adapter,
+                        preserve_output=True)
+
+                    # form P = M*J
+                    df.matmul_batched(
+                        tape,
+                        model.articulation_count,
+                        model.articulation_M_rows,
+                        model.articulation_J_cols,
+                        model.articulation_J_rows,
+                        0,
+                        0,
+                        model.articulation_M_start,
+                        model.articulation_J_start,
+                        model.articulation_J_start,     # P start is the same as J start since it has the same dims as J
+                        model.M,
+                        model.J,
+                        model.P,
+                        adapter=model.adapter)
+
+                    # form H = J^T*P
+                    df.matmul_batched(
+                        tape,
+                        model.articulation_count,
+                        model.articulation_J_cols,
+                        model.articulation_J_cols,
+                        model.articulation_J_rows,      # P rows is the same as J rows 
+                        1,
+                        0,
+                        model.articulation_J_start,
+                        model.articulation_J_start,     # P start is the same as J start since it has the same dims as J
+                        model.articulation_H_start,
+                        model.J,
+                        model.P,
+                        model.H,
+                        adapter=model.adapter)
+
+                    # compute decomposition
+                    tape.launch(
+                        func=eval_dense_cholesky_batched,
+                        dim=model.articulation_count,
+                        inputs=[
+                            model.articulation_H_start,
+                            model.articulation_H_rows,
+                            model.H,
+                            model.joint_armature
+                        ],
+                        outputs=[
+                            model.L
+                        ],
+                        adapter=model.adapter,
+                        skip_check_grad=True)
+
+                tmp = torch.zeros_like(state_out.joint_tau)
+
+                # solve for qdd
+                tape.launch(
+                    func=eval_dense_solve_batched,
+                    dim=model.articulation_count,
+                    inputs=[
+                        model.articulation_dof_start, 
+                        model.articulation_H_start,
+                        model.articulation_H_rows,                       
+                        model.H,
+                        model.L,
+                        state_out.joint_tau,
+                        tmp
+                    ],
+                    outputs=[
+                        state_out.joint_qdd
+                    ],
+                    adapter=model.adapter,
+                    skip_check_grad=True)
+
+                # integrate joint dofs -> joint coords
+                tape.launch(
+                    func=eval_rigid_integrate,
+                    dim=model.link_count,
+                    inputs=[
+                        model.joint_type,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        state_in.joint_q,
+                        state_in.joint_qd,
+                        state_out.joint_qdd,
+                        dt
+                    ],
+                    outputs=[
+                        state_out.joint_q,
+                        state_out.joint_qd
+                    ],
+                    adapter=model.adapter)
+
+            #----------------------------
+            # integrate particles
+
+            if (model.particle_count):
+                tape.launch(func=integrate_particles,
+                            dim=model.particle_count,
+                            inputs=[state_in.particle_q, state_in.particle_qd, state_out.particle_f, model.particle_inv_mass, model.gravity, dt],
+                            outputs=[state_out.particle_q, state_out.particle_qd],
+                            adapter=model.adapter)
+
+            return state_out
+        
+
+
+
+
+
+# @df.kernel
+# def eval_tetrahedra2(x: df.tensor(df.float3),
+#                     v: df.tensor(df.float3),
+#                     indices: df.tensor(int),
+#                     pose: df.tensor(df.mat33),
+#                     activation: df.tensor(float),
+#                     materials: df.tensor(float),
+#                     f: df.tensor(df.float3)):
+
+#     tid = df.tid()
+
+#     i = df.load(indices, tid * 4 + 0)
+#     j = df.load(indices, tid * 4 + 1)
+#     k = df.load(indices, tid * 4 + 2)
+#     l = df.load(indices, tid * 4 + 3)
+
+#     act = df.load(activation, tid)
+
+#     k_mu = df.load(materials, tid * 3 + 0)
+#     k_lambda = df.load(materials, tid * 3 + 1)
+#     k_damp = df.load(materials, tid * 3 + 2)
+
+#     x0 = df.load(x, i)
+#     x1 = df.load(x, j)
+#     x2 = df.load(x, k)
+#     x3 = df.load(x, l)
+
+#     v0 = df.load(v, i)
+#     v1 = df.load(v, j)
+#     v2 = df.load(v, k)
+#     v3 = df.load(v, l)
+
+#     x10 = x1 - x0
+#     x20 = x2 - x0
+#     x30 = x3 - x0
+
+#     v10 = v1 - v0
+#     v20 = v2 - v0
+#     v30 = v3 - v0
+
+#     Ds = df.mat33(x10, x20, x30)
+#     Dm = df.load(pose, tid)
+
+#     inv_rest_volume = df.determinant(Dm) * 6.0
+#     rest_volume = 1.0 / inv_rest_volume
+
+#     alpha = 1.0 + k_mu / k_lambda - k_mu / (4.0 * k_lambda)
+
+#     # scale stiffness coefficients to account for area
+#     k_mu = k_mu * rest_volume
+#     k_lambda = k_lambda * rest_volume
+#     k_damp = k_damp * rest_volume
+
+#     # F = Xs*Xm^-1
+#     F = Ds * Dm
+#     dFdt = df.mat33(v10, v20, v30) * Dm
+
+#     col1 = df.float3(F[0, 0], F[1, 0], F[2, 0])
+#     col2 = df.float3(F[0, 1], F[1, 1], F[2, 1])
+#     col3 = df.float3(F[0, 2], F[1, 2], F[2, 2])
+
+#     #-----------------------------
+#     # Neo-Hookean (with rest stability [Smith et al 2018])
+         
+#     Ic = dot(col1, col1) + dot(col2, col2) + dot(col3, col3)
+
+#     # deviatoric part
+#     P = F * k_mu * (1.0 - 1.0 / (Ic + 1.0)) + dFdt * k_damp
+#     H = P * df.transpose(Dm)
+
+#     f1 = df.float3(H[0, 0], H[1, 0], H[2, 0])
+#     f2 = df.float3(H[0, 1], H[1, 1], H[2, 1])
+#     f3 = df.float3(H[0, 2], H[1, 2], H[2, 2])
+
+#     #-----------------------------
+#     # C_spherical
+       
+#     # r_s = df.sqrt(dot(col1, col1) + dot(col2, col2) + dot(col3, col3))
+#     # r_s_inv = 1.0/r_s
+
+#     # C = r_s - df.sqrt(3.0) 
+#     # dCdx = F*df.transpose(Dm)*r_s_inv
+
+#     # grad1 = float3(dCdx[0,0], dCdx[1,0], dCdx[2,0])
+#     # grad2 = float3(dCdx[0,1], dCdx[1,1], dCdx[2,1])
+#     # grad3 = float3(dCdx[0,2], dCdx[1,2], dCdx[2,2])
+ 
+
+#     # f1 = grad1*C*k_mu
+#     # f2 = grad2*C*k_mu
+#     # f3 = grad3*C*k_mu
+
+#     #----------------------------
+#     # C_D
+
+#     # r_s = df.sqrt(dot(col1, col1) + dot(col2, col2) + dot(col3, col3))
+
+#     # C = r_s*r_s - 3.0
+#     # dCdx = F*df.transpose(Dm)*2.0
+
+#     # grad1 = float3(dCdx[0,0], dCdx[1,0], dCdx[2,0])
+#     # grad2 = float3(dCdx[0,1], dCdx[1,1], dCdx[2,1])
+#     # grad3 = float3(dCdx[0,2], dCdx[1,2], dCdx[2,2])
+ 
+#     # f1 = grad1*C*k_mu
+#     # f2 = grad2*C*k_mu
+#     # f3 = grad3*C*k_mu
+
+
+#     # hydrostatic part
+#     J = df.determinant(F)
+
+#     #print(J)
+#     s = inv_rest_volume / 6.0
+#     dJdx1 = df.cross(x20, x30) * s
+#     dJdx2 = df.cross(x30, x10) * s
+#     dJdx3 = df.cross(x10, x20) * s
+
+#     f_volume = (J - alpha + act) * k_lambda
+#     f_damp = (df.dot(dJdx1, v1) + df.dot(dJdx2, v2) + df.dot(dJdx3, v3)) * k_damp
+
+#     f_total = f_volume + f_damp
+
+#     f1 = f1 + dJdx1 * f_total
+#     f2 = f2 + dJdx2 * f_total
+#     f3 = f3 + dJdx3 * f_total
+#     f0 = (f1 + f2 + f3) * (0.0 - 1.0)
+
+#     # apply forces
+#     df.atomic_sub(f, i, f0)
+#     df.atomic_sub(f, j, f1)
+#     df.atomic_sub(f, k, f2)
+#     df.atomic_sub(f, l, f3)
+

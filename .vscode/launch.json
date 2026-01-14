@@ -11,7 +11,7 @@
             "program": "train_script.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/examples",
-            "args": ["--env", "Ant", "--algo", "shac", "--num-seeds", "5"],
+            "args": ["--env", "SNUHumanoid", "--algo", "shac", "--num-seeds", "5"],
             "stopOnEntry": true
         }
     ]

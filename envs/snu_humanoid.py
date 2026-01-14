@@ -31,29 +31,29 @@ class SNUHumanoidEnv(DFlexEnv):
 
     def __init__(self, render=False, device='cuda:0', num_envs=4096, seed=0, episode_length=1000, no_grad=True, stochastic_init=False, MM_caching_frequency = 1):
 
-        self.filter = { "Pelvis", "FemurR", "TibiaR", "TalusR", "FootThumbR", "FootPinkyR", "FemurL", "TibiaL", "TalusL", "FootThumbL", "FootPinkyL"}
+        self.filter = { "Pelvis", "FemurR", "TibiaR", "TalusR", "FootThumbR", "FootPinkyR", "FemurL", "TibiaL", "TalusL", "FootThumbL", "FootPinkyL"}        # Pelvis: 骨盆，根节点； Fermur: 大腿骨； Tibia: 胫骨(小腿）； Talus: 距骨(脚踝）； FootThumb: 脚大拇指； FootPinky: 脚小拇指
 
         self.skeletons = []
         self.muscle_strengths = []
 
-        self.mtu_actuations = True 
+        self.mtu_actuations = True  # whether to use MTU(muscle-tendon unit) actuations
 
-        self.inv_control_freq = 1
+        self.inv_control_freq = 1   # control frequency over simulation frequency
 
         # "humanoid_snu_lower"
-        self.num_joint_q = 29
-        self.num_joint_qd = 24
+        self.num_joint_q = 29   # the joint position dimension
+        self.num_joint_qd = 24  # the joint velocity dimension
 
-        self.num_dof = self.num_joint_q - 7 # 22
-        self.num_muscles = 152
+        self.num_dof = self.num_joint_q - 7 # 22   # exclude global pos(3) and rot(4)
+        self.num_muscles = 152  # the muscle actuation dimension
 
-        self.str_scale = 0.6
+        self.str_scale = 0.6    # muscle strength scaling factor， maximum is 60% of the original strength
 
-        num_act = self.num_joint_qd - 6 # 18
-        num_obs = 71 # 13 + 22 + 18 + 18
+        num_act = self.num_joint_qd - 6 # 18  # exclude global pos(3) and rot(3)
+        num_obs = 71 # 13 + 22 + 18 + 18   # 71 = 13 (root obs for 3 pos, 4 quaternion rot, 3 linear vel, 3 angular vel) + 22 (joint pos) + 18 (joint angular vel) + 18 (previous torques)
 
         if self.mtu_actuations:
-            num_obs = 53 # 71 - 18
+            num_obs = 53 # 71 - 18  # exclude 18 previous torques
 
         if self.mtu_actuations:
             num_act = self.num_muscles
@@ -380,11 +380,11 @@ class SNUHumanoidEnv(DFlexEnv):
 
         return checkpoint
 
-    def calculateObservations(self):
-        torso_pos = self.state.joint_q.view(self.num_envs, -1)[:, 0:3]
-        torso_rot = self.state.joint_q.view(self.num_envs, -1)[:, 3:7]
-        lin_vel = self.state.joint_qd.view(self.num_envs, -1)[:, 3:6]
-        ang_vel = self.state.joint_qd.view(self.num_envs, -1)[:, 0:3]
+    def calculateObservations(self):    #torso state as the observation
+        torso_pos = self.state.joint_q.view(self.num_envs, -1)[:, 0:3]  # torso x,y,z
+        torso_rot = self.state.joint_q.view(self.num_envs, -1)[:, 3:7]  # torso quaternion w,x,y,z
+        lin_vel = self.state.joint_qd.view(self.num_envs, -1)[:, 3:6]  # linear velocity of the torso
+        ang_vel = self.state.joint_qd.view(self.num_envs, -1)[:, 0:3]   # angular velocity of the torso
 
         # convert the linear velocity of the torso from twist representation to the velocity of the center of mass in world frame
         lin_vel = lin_vel - torch.cross(torso_pos, ang_vel, dim = -1)
@@ -397,7 +397,7 @@ class SNUHumanoidEnv(DFlexEnv):
 
         up_vec = tu.quat_rotate(torso_quat, self.basis_vec1)
         heading_vec = tu.quat_rotate(torso_quat, self.basis_vec0)
-        
+        # 最终拼接的obs_buf顺序：0: torso y pos; 1-4: torso rot quat; 5-7: lin vel; 8-10: ang vel; 11-32: joint pos; 33-50: joint vel; 51: up vec y component; 52: heading to target dir dot product, shape: (num_envs, 53)
         self.obs_buf = torch.cat([torso_pos[:, 1:2], # 0
                                 torso_rot, # 1:5
                                 lin_vel, # 5:8

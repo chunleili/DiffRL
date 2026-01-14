@@ -47,8 +47,8 @@ for i in range(len(seeds)):
         '--cfg {} '\
         '--seed {} '\
         '--logdir {} '\
-        '--no-time-stamp'\
             .format(script_name, config_path, seed, save_dir)
+        # '--no-time-stamp'\
 
     commands.append(cmd)
 
