@@ -1,0 +1,3 @@
+[submodule "MusclePhysics"]
+	path = MusclePhysics
+	url = https://github.com/chunleili/MusclePhysics
