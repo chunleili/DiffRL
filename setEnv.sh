@@ -10,6 +10,3 @@ export TORCH_CUDA_ARCH_LIST="8.6"
 # 激活 conda 环境
 eval "$(conda shell.bash hook)"
 conda activate shac
-
-# 运行传入的命令
-"$@"
