@@ -47,14 +47,13 @@ for i in range(len(seeds)):
         '--cfg {} '\
         '--seed {} '\
         '--logdir {} '\
-        '--no-time-stamp'\
             .format(script_name, config_path, seed, save_dir)
 
     commands.append(cmd)
 
 for command in commands:
     # 允许在同一 Python 进程内执行子脚本, 便于调试器(step into)
-    # 示例 command: "python train_shac.py --cfg ... --seed ... --logdir ... --no-time-stamp"
+    # 示例 command: "python train_shac.py --cfg ... --seed ... --logdir ..."
     args_list = shlex.split(command)
 
     # 提取脚本路径与参数(跳过前缀的 "python")
