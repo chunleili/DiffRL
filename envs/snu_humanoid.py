@@ -29,34 +29,49 @@ from utils import torch_utils as tu
 
 class SNUHumanoidEnv(DFlexEnv):
 
-    def __init__(self, render=False, device='cuda:0', num_envs=4096, seed=0, episode_length=1000, no_grad=True, stochastic_init=False, MM_caching_frequency = 1):
+    def __init__(self, render=False, device='cuda:0', num_envs=4096, seed=0, episode_length=1000, no_grad=True, stochastic_init=False, MM_caching_frequency = 1, full_body=False):
 
-        self.filter = { "Pelvis", "FemurR", "TibiaR", "TalusR", "FootThumbR", "FootPinkyR", "FemurL", "TibiaL", "TalusL", "FootThumbL", "FootPinkyL"}
+        if full_body:
+            # Full body: all 23 nodes (1 Free + 14 Ball + 8 Revolute), all 284 muscles.
+            self.filter = set()
+            # joint_q  = 7(Free) + 14*4(Ball) + 8*1(Revolute) = 71
+            # joint_qd = 6(Free) + 14*3(Ball) + 8*1(Revolute) = 56
+            self.num_joint_q = 71
+            self.num_joint_qd = 56
+            self.num_muscles = 284
+        else:
+            # Lower body only (original DiffRL setup): 11 nodes, 152 muscles.
+            self.filter = { "Pelvis", "FemurR", "TibiaR", "TalusR", "FootThumbR", "FootPinkyR", "FemurL", "TibiaL", "TalusL", "FootThumbL", "FootPinkyL"}
+            self.num_joint_q = 29
+            self.num_joint_qd = 24
+            self.num_muscles = 152
+
+        self.full_body = full_body
 
         self.skeletons = []
         self.muscle_strengths = []
 
-        self.mtu_actuations = True 
+        self.mtu_actuations = True
 
         self.inv_control_freq = 1
 
-        # "humanoid_snu_lower"
-        self.num_joint_q = 29
-        self.num_joint_qd = 24
-
-        self.num_dof = self.num_joint_q - 7 # 22
-        self.num_muscles = 152
+        self.num_dof = self.num_joint_q - 7      # lower:22, full:64
+        _num_act_qd = self.num_joint_qd - 6       # lower:18, full:50
 
         self.str_scale = 0.6
 
-        num_act = self.num_joint_qd - 6 # 18
-        num_obs = 71 # 13 + 22 + 18 + 18
-
-        if self.mtu_actuations:
-            num_obs = 53 # 71 - 18
+        # obs layout (see calculateObservations): torso(13) + joint_q[7:](num_dof) + joint_qd[6:](num_act_qd) + up(1) + heading(1)
+        # For MTU mode both blocks are included in obs; the non-MTU extra 18 slots in the original
+        # code appear to be dead (not produced by calculateObservations). We only use MTU mode.
+        num_act = _num_act_qd
+        num_obs = 13 + self.num_dof + _num_act_qd                 # lower:53, full:127
 
         if self.mtu_actuations:
             num_act = self.num_muscles
+
+        # Reward obs indices (depend on body size)
+        self._up_vec_idx = 11 + self.num_dof + _num_act_qd        # lower:51, full:125
+        self._heading_idx = self._up_vec_idx + 1                  # lower:52, full:126
         
         super(SNUHumanoidEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, no_grad, render, device)
 
@@ -409,8 +424,8 @@ class SNUHumanoidEnv(DFlexEnv):
                                 dim = -1)
 
     def calculateReward(self):
-        up_reward = 0.1 * self.obs_buf[:, 51]
-        heading_reward = self.obs_buf[:, 52]
+        up_reward = 0.1 * self.obs_buf[:, self._up_vec_idx]
+        heading_reward = self.obs_buf[:, self._heading_idx]
 
         height_diff = self.obs_buf[:, 0] - (self.termination_height + self.termination_tolerance)
         height_reward = torch.clip(height_diff, -1.0, self.termination_tolerance)
@@ -437,4 +452,14 @@ class SNUHumanoidEnv(DFlexEnv):
         self.reset_buf = torch.where(invalid_masks, torch.ones_like(self.reset_buf), self.reset_buf)
 
         self.rew_buf[invalid_masks] = 0.
+
+
+class SNUHumanoidFullBodyEnv(SNUHumanoidEnv):
+    """SNU humanoid with all 23 bodies and all 284 MTUs (vs lower-body-only default)."""
+
+    def __init__(self, render=False, device='cuda:0', num_envs=4096, seed=0, episode_length=1000, no_grad=True, stochastic_init=False, MM_caching_frequency=1):
+        super().__init__(render=render, device=device, num_envs=num_envs, seed=seed,
+                         episode_length=episode_length, no_grad=no_grad,
+                         stochastic_init=stochastic_init,
+                         MM_caching_frequency=MM_caching_frequency, full_body=True)
     
