@@ -18,7 +18,7 @@ params:
 
   config:
     name: df_snu_humanoid_fullbody_shac
-    actor_learning_rate: 5e-4 # adam — lower than lower-body (2e-3); full body w/ 284 MTUs is more NaN-prone
+    actor_learning_rate: 2e-3 # adam
     critic_learning_rate: 5e-4 # adam
     lr_schedule: linear # ['constant', 'linear']
     target_critic_alpha: 0.995
@@ -34,7 +34,7 @@ params:
     steps_num: 32
     grad_norm: 1.0
     truncate_grads: True
-    num_actors: 1024
+    num_actors: 64
     save_interval: 400
 
     player:
